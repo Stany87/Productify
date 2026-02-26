@@ -1,0 +1,17 @@
+{
+    "name": "Productify",
+    "short_name": "Productify",
+    "description": "AI-powered productivity tracker with smart scheduling and backlog management",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#0f1117",
+    "theme_color": "#10b981",
+    "icons": [
+        {
+            "src": "/icon-192.svg",
+            "sizes": "192x192",
+            "type": "image/svg+xml",
+            "purpose": "any maskable"
+        }
+    ]
+}
