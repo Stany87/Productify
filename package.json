@@ -42,6 +42,7 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "@netlify/functions": "^5.1.2",
     "axios": "^1.13.5",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.6.2",
