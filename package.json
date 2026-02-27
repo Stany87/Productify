@@ -35,8 +35,8 @@
     },
     "extraResources": [
       {
-        "from": "server/productify.db",
-        "to": "productify.db"
+        "from": "server/.env",
+        "to": ".env"
       }
     ]
   },
