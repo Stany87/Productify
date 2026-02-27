@@ -36,6 +36,17 @@ app.use('/api/habits', authMiddleware, habitsRouter);
 app.use('/api/stats', authMiddleware, statsRouter);
 app.use('/api/ai', authMiddleware, aiRouter);
 
+// Serve static frontend files (used primarily by the Electron desktop app)
+import fs from 'fs';
+const distPath = path.join(__dirname, 'dist');
+if (fs.existsSync(distPath)) {
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+        if (req.path.startsWith('/api')) return res.status(404).json({ error: 'API Route Not Found' });
+        res.sendFile(path.join(distPath, 'index.html'));
+    });
+}
+
 export function startServer(port = PORT) {
     return new Promise((resolve) => {
         const server = app.listen(port, () => {
