@@ -49,4 +49,3 @@ deno.lock
 
 # Local Netlify folder
 .netlify
-netlify/
