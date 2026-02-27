@@ -16,18 +16,20 @@ With built-in LeetCode API integration and AI-powered schedule pivoting, it acts
 
 ## 🛠 Tech Stack
 
-- **Frontend**: React 19, Vite, Tailwind CSS v4, Framer Motion (for fluid animations), Recharts (for analytics dashboards), React Router.
-- **Backend / API**: Node.js, Express, `better-sqlite3` (with WAL mode enabled for high concurrency).
+- **Frontend**: React 19, Vite, Tailwind CSS v4, Framer Motion, Recharts.
+- **Backend / API**: Node.js, Express wrapped in **Netlify Functions** (`serverless-http`), **PostgreSQL** (`pg` pool).
+- **Database**: Cloud-hosted **Supabase** (PostgreSQL) replace local SQLite for serverless scalability.
 - **Authentication**: JWT token-based authentication (`jsonwebtoken`, `bcryptjs`).
 - **AI Engine**: `groq-sdk` handling unstructured NLP generation.
 
-## 💻 Running Locally
+## 💻 Running & Deploying Locally
 
 ### Prerequisites
 - Node.js (v18+)
 - A [Groq API Key](https://console.groq.com/keys)
+- A [Supabase](https://supabase.com/) PostgreSQL database
 
-### Setup Instructions
+### Local Development Setup
 
 1. **Clone the repository:**
    ```bash
@@ -41,18 +43,30 @@ With built-in LeetCode API integration and AI-powered schedule pivoting, it acts
    ```
 
 3. **Configure Environment Variables:**
-   Create a `.env` file in the `server/` directory and add your Groq API Key:
+   Create a `.env` file in the root directory:
    ```env
    GROQ_API_KEY=your_groq_api_key_here
-   PORT=3001
+   DATABASE_URL=postgresql://postgres:[YOUR-PASSWORD]@db.[YOUR-URL].supabase.co:5432/postgres
+   JWT_SECRET=your_jwt_secret_key_here
    ```
 
-4. **Start the Frontend & Backend Servers (Concurrent):**
+4. **Initialize Database Schema:**
+   *(Ensure you have executed the commands in `server/schema.sql` against your Supabase database either via the Supabase SQL Editor or a local migration script.)*
+
+5. **Start the Netlify Dev Server:**
+   This project uses Netlify Dev to automatically spin up both the Vite frontend and proxy the Node.js serverless backend.
    ```bash
-   npm run dev
-   # (in a separate terminal)
-   node server/index.js
+   npx netlify dev
    ```
 
-5. **Open in Browser:**
-   Navigate to `http://localhost:5173` to access the application.
+6. **Open in Browser:**
+   Navigate to `http://localhost:8888` to access the full-stack application natively.
+
+### 🌐 Deploying to Netlify (Production)
+
+This project contains a `netlify.toml` file pre-configured for deployment. 
+1. Push your code to GitHub.
+2. Sign in to [Netlify](https://www.netlify.com/) and click **"Add new site" -> "Import an existing project"**.
+3. Select your GitHub repository.
+4. Add your `GROQ_API_KEY`, `DATABASE_URL`, and `JWT_SECRET` in the Netlify **Environment Variables** settings.
+5. Click **Deploy Site**. Your backend API will automatically be hosted as Netlify Serverless Functions!

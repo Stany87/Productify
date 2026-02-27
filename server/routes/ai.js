@@ -1,12 +1,6 @@
 import { Router } from 'express';
 import Groq from 'groq-sdk';
-import dotenv from 'dotenv';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import db from '../db.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: path.join(__dirname, '..', '.env') });
+import pool from '../db.js';
 
 const router = Router();
 
@@ -106,61 +100,84 @@ async function callGroq(systemPrompt, userPrompt) {
     });
 
     const text = result.choices[0]?.message?.content || '';
-    // Strip code fences if present
     const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/) || [null, text];
     return JSON.parse(jsonMatch[1].trim());
 }
 
+async function saveBaseline(userId, sessions) {
+    await pool.query('DELETE FROM baseline_sessions WHERE userId = $1', [userId]);
+
+    const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+    for (const [dayName, daySessions] of Object.entries(sessions)) {
+        const dow = DAYS.indexOf(dayName);
+        if (dow === -1) continue;
+
+        for (const s of daySessions) {
+            await pool.query(
+                `INSERT INTO baseline_sessions (userId, name, dayOfWeek, startTime, endTime, type, category, icon, color, items)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+                [
+                    userId, s.name, dow, s.startTime, s.endTime,
+                    s.type || 'fixed', s.category || 'other',
+                    s.icon || '📚', s.color || '#10b981',
+                    JSON.stringify(s.items || [])
+                ]
+            );
+        }
+    }
+}
+
 // POST /api/ai/generate-schedule
 router.post('/generate-schedule', async (req, res) => {
-    const { lifeDescription, leetcodeTarget, skillFocuses } = req.body;
-    if (!lifeDescription) return res.status(400).json({ error: 'lifeDescription required' });
-
-    const prompt = `${lifeDescription}\n\nTargets: ${leetcodeTarget || 5} LeetCode problems per day.\nSkill focuses: ${(skillFocuses || []).join(', ') || 'General coding skills'}`;
-
-    if (!process.env.GROQ_API_KEY) {
-        const fallback = getDefaultSchedule(lifeDescription, leetcodeTarget || 5, skillFocuses);
-        saveBaseline(req.userId, fallback.sessions);
-        return res.json(fallback);
-    }
-
     try {
-        const parsed = await callGroq(SCHEDULE_PROMPT, `User's life: ${prompt}`);
+        const { lifeDescription, leetcodeTarget, skillFocuses } = req.body;
+        if (!lifeDescription) return res.status(400).json({ error: 'lifeDescription required' });
 
-        saveBaseline(req.userId, parsed.sessions);
+        const prompt = `${lifeDescription}\n\nTargets: ${leetcodeTarget || 5} LeetCode problems per day.\nSkill focuses: ${(skillFocuses || []).join(', ') || 'General coding skills'}`;
 
-        db.prepare(`
-      UPDATE user_profile SET lifeDescription = ?, leetcodeTarget = ?,
-        skillFocuses = ?, updatedAt = datetime('now') WHERE userId = ?
-    `).run(lifeDescription, leetcodeTarget || 5, JSON.stringify(skillFocuses || []), req.userId);
+        let parsed;
+        if (!process.env.GROQ_API_KEY) {
+            parsed = getDefaultSchedule(lifeDescription, leetcodeTarget || 5, skillFocuses);
+        } else {
+            parsed = await callGroq(SCHEDULE_PROMPT, `User's life: ${prompt}`);
+        }
+
+        await saveBaseline(req.userId, parsed.sessions);
+
+        await pool.query(`
+          UPDATE user_profile SET lifeDescription = $1, leetcodeTarget = $2,
+          skillFocuses = $3, updatedAt = NOW() WHERE userId = $4
+        `, [lifeDescription, leetcodeTarget || 5, JSON.stringify(skillFocuses || []), req.userId]);
 
         res.json(parsed);
     } catch (error) {
-        console.error('Groq error:', error.message);
-        const fallback = getDefaultSchedule(lifeDescription, leetcodeTarget || 5, skillFocuses);
-        saveBaseline(req.userId, fallback.sessions);
+        console.error('AI generate error:', error.message);
+        const fallback = getDefaultSchedule(req.body.lifeDescription, req.body.leetcodeTarget || 5, req.body.skillFocuses);
+        await saveBaseline(req.userId, fallback.sessions);
         res.json(fallback);
     }
 });
 
 // POST /api/ai/pivot
 router.post('/pivot', async (req, res) => {
-    const { reason, date } = req.body;
-    if (!reason || !date) return res.status(400).json({ error: 'reason and date required' });
-
-    const currentSessions = db.prepare(
-        'SELECT * FROM daily_sessions WHERE userId = ? AND date = ? ORDER BY startTime ASC'
-    ).all(req.userId, date);
-
-    const currentScheduleStr = currentSessions.map(
-        s => `${s.startTime}-${s.endTime}: ${s.name} (${s.category})`
-    ).join('\n');
-
-    if (!process.env.GROQ_API_KEY) {
-        return res.json({ sessions: [], summary: 'GROQ_API_KEY required for AI pivot' });
-    }
-
     try {
+        const { reason, date } = req.body;
+        if (!reason || !date) return res.status(400).json({ error: 'reason and date required' });
+
+        const { rows: currentSessions } = await pool.query(
+            'SELECT * FROM daily_sessions WHERE userId = $1 AND date = $2 ORDER BY startTime ASC',
+            [req.userId, date]
+        );
+
+        const currentScheduleStr = currentSessions.map(
+            s => `${s.startTime}-${s.endTime}: ${s.name} (${s.category})`
+        ).join('\n');
+
+        if (!process.env.GROQ_API_KEY) {
+            return res.json({ sessions: [], summary: 'GROQ_API_KEY required for AI pivot' });
+        }
+
         const pivotPrompt = PIVOT_PROMPT
             .replace('{currentSchedule}', currentScheduleStr)
             .replace('{reason}', reason);
@@ -176,10 +193,10 @@ router.post('/pivot', async (req, res) => {
         }
         if (!Array.isArray(sessionsArr)) sessionsArr = [];
 
-        db.prepare(`
-      INSERT INTO daily_overrides (userId, date, reason) VALUES (?, ?, ?)
-      ON CONFLICT(userId, date) DO UPDATE SET reason = ?, createdAt = datetime('now')
-    `).run(req.userId, date, reason, reason);
+        await pool.query(`
+          INSERT INTO daily_overrides (userId, date, reason) VALUES ($1, $2, $3)
+          ON CONFLICT(userId, date) DO UPDATE SET reason = $3, createdAt = NOW()
+        `, [req.userId, date, reason]);
 
         res.json({ sessions: sessionsArr, summary: parsed.summary || 'Schedule restructured' });
     } catch (error) {
@@ -187,30 +204,6 @@ router.post('/pivot', async (req, res) => {
         res.status(500).json({ error: 'Failed to restructure schedule' });
     }
 });
-
-function saveBaseline(userId, sessions) {
-    db.prepare('DELETE FROM baseline_sessions WHERE userId = ?').run(userId);
-
-    const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    const insert = db.prepare(`
-    INSERT INTO baseline_sessions (userId, name, dayOfWeek, startTime, endTime, type, category, icon, color, items)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-    for (const [dayName, daySessions] of Object.entries(sessions)) {
-        const dow = DAYS.indexOf(dayName);
-        if (dow === -1) continue;
-
-        for (const s of daySessions) {
-            insert.run(
-                userId, s.name, dow, s.startTime, s.endTime,
-                s.type || 'fixed', s.category || 'other',
-                s.icon || '📚', s.color || '#10b981',
-                JSON.stringify(s.items || [])
-            );
-        }
-    }
-}
 
 function getDefaultSchedule(description, lcTarget, skillFocuses = []) {
     const lower = description.toLowerCase();
@@ -295,9 +288,7 @@ function getDefaultSchedule(description, lcTarget, skillFocuses = []) {
         // LeetCode session with difficulty distribution
         const lcSlot = hasFix ? (hasGym ? Math.floor(gymTime) + 1 : slotAfterFixed + 1) : 9;
         const lcDuration = Math.min(Math.ceil(lcTarget / 2), 3);
-        // Distribute: ~40% Easy, ~40% Medium, ~20% Hard — vary by day
         const diffMixes = [
-            // Mon, Tue, Wed, Thu, Fri patterns
             { easy: 0.4, med: 0.4, hard: 0.2 },
             { easy: 0.3, med: 0.5, hard: 0.2 },
             { easy: 0.2, med: 0.4, hard: 0.4 },
@@ -319,7 +310,7 @@ function getDefaultSchedule(description, lcTarget, skillFocuses = []) {
         });
 
         // Skill session
-        const skillSlot = lcSlot + lcDuration + (hasCooking ? 1 : 0); // gap for meal
+        const skillSlot = lcSlot + lcDuration + (hasCooking ? 1 : 0);
         const skillName = skills[dayIndex % skills.length];
         s.push({
             name: `Skill — ${skillName}`, startTime: `${String(skillSlot).padStart(2, '0')}:00`,
@@ -335,7 +326,6 @@ function getDefaultSchedule(description, lcTarget, skillFocuses = []) {
             type: 'break', category: 'break', icon: '🍽️', color: '#64748b', items: []
         });
 
-        // Sort by startTime and remove overlaps
         s.sort((a, b) => a.startTime.localeCompare(b.startTime));
         return deOverlap(s);
     };
@@ -350,7 +340,6 @@ function getDefaultSchedule(description, lcTarget, skillFocuses = []) {
         });
 
         const lcDuration = Math.min(Math.ceil(lcTarget / 2), 3);
-        // Weekends: heavier on Medium/Hard for challenge
         const nEasy = Math.max(1, Math.round(lcTarget * 0.2));
         const nHard = Math.max(1, Math.round(lcTarget * 0.3));
         const nMed = Math.max(0, lcTarget - nEasy - nHard);
@@ -370,7 +359,6 @@ function getDefaultSchedule(description, lcTarget, skillFocuses = []) {
             type: 'break', category: 'meal', icon: '🍕', color: '#64748b', items: []
         });
 
-        // Project work (longer on weekends)
         s.push({
             name: 'Project Work', startTime: '13:00', endTime: '16:00',
             type: 'productive', category: 'project', icon: '🚀', color: '#10b981',
@@ -401,8 +389,8 @@ function getDefaultSchedule(description, lcTarget, skillFocuses = []) {
         return deOverlap(s);
     };
 
-    // Helper to remove overlapping sessions
     function deOverlap(sessions) {
+        if (!sessions.length) return [];
         const result = [sessions[0]];
         for (let i = 1; i < sessions.length; i++) {
             const prev = result[result.length - 1];
@@ -421,7 +409,7 @@ function getDefaultSchedule(description, lcTarget, skillFocuses = []) {
     DAYS.forEach((day, i) => {
         sessions[day] = (day === 'Saturday' || day === 'Sunday')
             ? buildWeekend(i)
-            : buildWeekday(i);
+            : buildWeekday(i + 1); // 1-5 for weekday patterns
     });
 
     const detections = [
@@ -437,3 +425,4 @@ function getDefaultSchedule(description, lcTarget, skillFocuses = []) {
 }
 
 export default router;
+

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import db from '../db.js';
+import pool from '../db.js';
 
 const router = Router();
 
@@ -9,54 +9,76 @@ function getTodayKey() {
 }
 
 // GET /api/habits/:date
-router.get('/:date', (req, res) => {
-  const { date } = req.params;
-  const profile = db.prepare('SELECT waterTarget FROM user_profile WHERE userId = ?').get(req.userId);
-  const waterTarget = profile?.waterTarget || 4.0;
+router.get('/:date', async (req, res) => {
+  try {
+    const { date } = req.params;
+    const { rows: profileRows } = await pool.query('SELECT waterTarget as "waterTarget" FROM user_profile WHERE userId = $1', [req.userId]);
+    const waterTarget = profileRows[0]?.waterTarget || 4.0;
 
-  db.prepare(`
-    INSERT OR IGNORE INTO daily_habits (userId, date, habitType, targetValue) VALUES (?, ?, 'water', ?)
-  `).run(req.userId, date, waterTarget);
-  db.prepare(`
-    INSERT OR IGNORE INTO daily_habits (userId, date, habitType, targetValue) VALUES (?, ?, 'workout', 1)
-  `).run(req.userId, date);
+    await pool.query(`
+      INSERT INTO daily_habits (userId, date, habitType, targetValue) 
+      VALUES ($1, $2, 'water', $3)
+      ON CONFLICT (userId, date, habitType) DO NOTHING
+    `, [req.userId, date, waterTarget]);
 
-  const habits = db.prepare('SELECT * FROM daily_habits WHERE userId = ? AND date = ?').all(req.userId, date);
-  const result = {};
-  habits.forEach(h => { result[h.habitType] = h; });
-  res.json(result);
+    await pool.query(`
+      INSERT INTO daily_habits (userId, date, habitType, targetValue) 
+      VALUES ($1, $2, 'workout', 1)
+      ON CONFLICT (userId, date, habitType) DO NOTHING
+    `, [req.userId, date]);
+
+    const { rows: habits } = await pool.query('SELECT * FROM daily_habits WHERE userId = $1 AND date = $2', [req.userId, date]);
+    const result = {};
+    habits.forEach(h => { result[h.habittype] = h; });
+    res.json(result);
+  } catch (err) {
+    console.error('Habits GET error:', err);
+    res.status(500).json({ error: 'Failed' });
+  }
 });
 
 // POST /api/habits/water
-router.post('/water', (req, res) => {
-  const { amount } = req.body;
-  const today = getTodayKey();
-  const profile = db.prepare('SELECT waterTarget FROM user_profile WHERE userId = ?').get(req.userId);
+router.post('/water', async (req, res) => {
+  try {
+    const { amount } = req.body;
+    const today = getTodayKey();
+    const { rows: profileRows } = await pool.query('SELECT waterTarget as "waterTarget" FROM user_profile WHERE userId = $1', [req.userId]);
+    const target = profileRows[0]?.waterTarget || 4.0;
 
-  db.prepare(`
-    INSERT INTO daily_habits (userId, date, habitType, targetValue, currentValue)
-    VALUES (?, ?, 'water', ?, ?)
-    ON CONFLICT(userId, date, habitType)
-    DO UPDATE SET currentValue = MIN(currentValue + ?, targetValue)
-  `).run(req.userId, today, profile?.waterTarget || 4.0, amount || 0.5, amount || 0.5);
+    await pool.query(`
+      INSERT INTO daily_habits (userId, date, habitType, targetValue, currentValue)
+      VALUES ($1, $2, 'water', $3, $4)
+      ON CONFLICT(userId, date, habitType)
+      DO UPDATE SET currentValue = LEAST(daily_habits.currentValue + $4, daily_habits.targetValue)
+    `, [req.userId, today, target, amount || 0.5]);
 
-  const habit = db.prepare("SELECT * FROM daily_habits WHERE userId = ? AND date = ? AND habitType = 'water'").get(req.userId, today);
-  res.json(habit);
+    const { rows } = await pool.query("SELECT * FROM daily_habits WHERE userId = $1 AND date = $2 AND habitType = 'water'", [req.userId, today]);
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Water update error:', err);
+    res.status(500).json({ error: 'Failed' });
+  }
 });
 
 // POST /api/habits/workout
-router.post('/workout', (req, res) => {
-  const today = getTodayKey();
+router.post('/workout', async (req, res) => {
+  try {
+    const today = getTodayKey();
 
-  db.prepare(`
-    INSERT INTO daily_habits (userId, date, habitType, targetValue, currentValue)
-    VALUES (?, ?, 'workout', 1, 1)
-    ON CONFLICT(userId, date, habitType)
-    DO UPDATE SET currentValue = CASE WHEN currentValue = 0 THEN 1 ELSE 0 END
-  `).run(req.userId, today);
+    await pool.query(`
+      INSERT INTO daily_habits (userId, date, habitType, targetValue, currentValue)
+      VALUES ($1, $2, 'workout', 1, 1)
+      ON CONFLICT(userId, date, habitType)
+      DO UPDATE SET currentValue = CASE WHEN daily_habits.currentValue = 0 THEN 1 ELSE 0 END
+    `, [req.userId, today]);
 
-  const habit = db.prepare("SELECT * FROM daily_habits WHERE userId = ? AND date = ? AND habitType = 'workout'").get(req.userId, today);
-  res.json(habit);
+    const { rows } = await pool.query("SELECT * FROM daily_habits WHERE userId = $1 AND date = $2 AND habitType = 'workout'", [req.userId, today]);
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Workout update error:', err);
+    res.status(500).json({ error: 'Failed' });
+  }
 });
 
 export default router;
+

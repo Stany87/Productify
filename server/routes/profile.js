@@ -1,66 +1,83 @@
 import { Router } from 'express';
-import db from '../db.js';
+import pool from '../db.js';
 
 const router = Router();
 
 // GET /api/profile
-router.get('/', (req, res) => {
-  const profile = db.prepare('SELECT * FROM user_profile WHERE userId = ?').get(req.userId);
-  if (!profile) {
-    // Auto-create profile for user
-    db.prepare('INSERT INTO user_profile (userId, lifeDescription) VALUES (?, ?)').run(req.userId, '');
-    const created = db.prepare('SELECT * FROM user_profile WHERE userId = ?').get(req.userId);
-    return res.json(created);
+router.get('/', async (req, res) => {
+  try {
+    const { rows: profileRows } = await pool.query(`
+      SELECT userId as "userId", lifeDescription as "lifeDescription", 
+             leetcodeTarget as "leetcodeTarget", leetcodeUsername as "leetcodeUsername", 
+             skillFocuses as "skillFocuses", waterTarget as "waterTarget", 
+             updatedAt as "updatedAt" 
+      FROM user_profile WHERE userId = $1
+    `, [req.userId]);
+
+    let profile = profileRows[0];
+    if (!profile) {
+      await pool.query('INSERT INTO user_profile (userId, lifeDescription) VALUES ($1, $2) ON CONFLICT (userId) DO NOTHING', [req.userId, '']);
+      const { rows } = await pool.query('SELECT * FROM user_profile WHERE userId = $1', [req.userId]);
+      profile = rows[0];
+    }
+    res.json(profile);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed' });
   }
-  res.json(profile);
 });
 
 // PUT /api/profile
-router.put('/', (req, res) => {
-  const { lifeDescription, leetcodeTarget, leetcodeUsername, skillFocuses, waterTarget } = req.body;
+router.put('/', async (req, res) => {
+  try {
+    const { lifeDescription, leetcodeTarget, leetcodeUsername, skillFocuses, waterTarget } = req.body;
 
-  // Ensure profile exists
-  const existing = db.prepare('SELECT * FROM user_profile WHERE userId = ?').get(req.userId);
-  if (!existing) {
-    db.prepare('INSERT INTO user_profile (userId, lifeDescription) VALUES (?, ?)').run(req.userId, '');
+    await pool.query(`
+      UPDATE user_profile SET
+        lifeDescription = COALESCE($1, lifeDescription),
+        leetcodeTarget = COALESCE($2, leetcodeTarget),
+        leetcodeUsername = COALESCE($3, leetcodeUsername),
+        skillFocuses = COALESCE($4, skillFocuses),
+        waterTarget = COALESCE($5, waterTarget),
+        updatedAt = NOW()
+      WHERE userId = $6
+    `, [
+      lifeDescription ?? null,
+      leetcodeTarget ?? null,
+      leetcodeUsername ?? null,
+      skillFocuses ? (typeof skillFocuses === 'string' ? skillFocuses : JSON.stringify(skillFocuses)) : null,
+      waterTarget ?? null,
+      req.userId
+    ]);
+
+    const { rows } = await pool.query('SELECT * FROM user_profile WHERE userId = $1', [req.userId]);
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Update failed' });
   }
-
-  db.prepare(`
-    UPDATE user_profile SET
-      lifeDescription = COALESCE(?, lifeDescription),
-      leetcodeTarget = COALESCE(?, leetcodeTarget),
-      leetcodeUsername = COALESCE(?, leetcodeUsername),
-      skillFocuses = COALESCE(?, skillFocuses),
-      waterTarget = COALESCE(?, waterTarget),
-      updatedAt = datetime('now')
-    WHERE userId = ?
-  `).run(
-    lifeDescription ?? null,
-    leetcodeTarget ?? null,
-    leetcodeUsername ?? null,
-    skillFocuses ? JSON.stringify(skillFocuses) : null,
-    waterTarget ?? null,
-    req.userId
-  );
-  const updated = db.prepare('SELECT * FROM user_profile WHERE userId = ?').get(req.userId);
-  res.json(updated);
 });
 
 // PUT /api/profile/password
 router.put('/password', async (req, res) => {
-  const { currentPassword, newPassword } = req.body;
-  if (!currentPassword || !newPassword || newPassword.length < 6) {
-    return res.status(400).json({ error: 'Invalid password' });
+  try {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword || newPassword.length < 6) {
+      return res.status(400).json({ error: 'Invalid password' });
+    }
+
+    const { default: bcrypt } = await import('bcryptjs');
+    const { rows } = await pool.query('SELECT * FROM users WHERE id = $1', [req.userId]);
+    const user = rows[0];
+
+    const valid = await bcrypt.compare(currentPassword, user.passwordhash);
+    if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
+
+    const hash = await bcrypt.hash(newPassword, 10);
+    await pool.query('UPDATE users SET passwordHash = $1 WHERE id = $2', [hash, req.userId]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Password update failed' });
   }
-
-  const { default: bcrypt } = await import('bcryptjs');
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.userId);
-  const valid = await bcrypt.compare(currentPassword, user.passwordHash);
-  if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
-
-  const hash = await bcrypt.hash(newPassword, 10);
-  db.prepare('UPDATE users SET passwordHash = ? WHERE id = ?').run(hash, req.userId);
-  res.json({ success: true });
 });
 
 export default router;
+

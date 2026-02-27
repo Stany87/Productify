@@ -3,11 +3,42 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "dev:electron": "concurrently \"vite\" \"cross-env NODE_ENV=development electron .\"",
+    "build:electron": "vite build && electron-builder"
+  },
+  "build": {
+    "appId": "com.productify.desktop",
+    "productName": "Productify Mainframe",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "server/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "public/icon-192.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "extraResources": [
+      {
+        "from": "server/productify.db",
+        "to": "productify.db"
+      }
+    ]
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
@@ -20,12 +51,14 @@
     "framer-motion": "^12.34.3",
     "groq-sdk": "^0.37.0",
     "jsonwebtoken": "^9.0.3",
+    "pg": "^8.19.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-hot-toast": "^2.6.0",
     "react-icons": "^5.5.0",
     "react-router-dom": "^7.13.1",
-    "recharts": "^3.7.0"
+    "recharts": "^3.7.0",
+    "serverless-http": "^4.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
@@ -41,6 +74,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
+    "netlify-cli": "^24.0.1",
     "tailwindcss": "^4.2.0",
     "vite": "^7.3.1"
   }
