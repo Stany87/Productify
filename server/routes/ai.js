@@ -1,6 +1,9 @@
 import { Router } from 'express';
 import Groq from 'groq-sdk';
-import pool from '../db.js';
+import BaselineSession from '../models/BaselineSession.js';
+import UserProfile from '../models/UserProfile.js';
+import DailyOverride from '../models/DailyOverride.js';
+import DailySession from '../models/DailySession.js';
 
 const router = Router();
 
@@ -105,27 +108,27 @@ async function callGroq(systemPrompt, userPrompt) {
 }
 
 async function saveBaseline(userId, sessions) {
-    await pool.query('DELETE FROM baseline_sessions WHERE userId = $1', [userId]);
+    await BaselineSession.deleteMany({ userId });
 
     const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const docs = [];
 
     for (const [dayName, daySessions] of Object.entries(sessions)) {
         const dow = DAYS.indexOf(dayName);
         if (dow === -1) continue;
 
         for (const s of daySessions) {
-            await pool.query(
-                `INSERT INTO baseline_sessions (userId, name, dayOfWeek, startTime, endTime, type, category, icon, color, items)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-                [
-                    userId, s.name, dow, s.startTime, s.endTime,
-                    s.type || 'fixed', s.category || 'other',
-                    s.icon || '📚', s.color || '#10b981',
-                    JSON.stringify(s.items || [])
-                ]
-            );
+            docs.push({
+                userId, name: s.name, dayOfWeek: dow,
+                startTime: s.startTime, endTime: s.endTime,
+                type: s.type || 'fixed', category: s.category || 'other',
+                icon: s.icon || '📚', color: s.color || '#10b981',
+                items: JSON.stringify(s.items || []),
+            });
         }
     }
+
+    if (docs.length > 0) await BaselineSession.insertMany(docs);
 }
 
 // POST /api/ai/generate-schedule
@@ -145,10 +148,17 @@ router.post('/generate-schedule', async (req, res) => {
 
         await saveBaseline(req.userId, parsed.sessions);
 
-        await pool.query(`
-          UPDATE user_profile SET lifeDescription = $1, leetcodeTarget = $2,
-          skillFocuses = $3, updatedAt = NOW() WHERE userId = $4
-        `, [lifeDescription, leetcodeTarget || 5, JSON.stringify(skillFocuses || []), req.userId]);
+        await UserProfile.findOneAndUpdate(
+            { userId: req.userId },
+            {
+                $set: {
+                    lifeDescription,
+                    leetcodeTarget: leetcodeTarget || 5,
+                    skillFocuses: JSON.stringify(skillFocuses || []),
+                }
+            },
+            { upsert: true }
+        );
 
         res.json(parsed);
     } catch (error) {
@@ -165,10 +175,7 @@ router.post('/pivot', async (req, res) => {
         const { reason, date } = req.body;
         if (!reason || !date) return res.status(400).json({ error: 'reason and date required' });
 
-        const { rows: currentSessions } = await pool.query(
-            'SELECT * FROM daily_sessions WHERE userId = $1 AND date = $2 ORDER BY startTime ASC',
-            [req.userId, date]
-        );
+        const currentSessions = await DailySession.find({ userId: req.userId, date }).sort({ startTime: 1 }).lean();
 
         const currentScheduleStr = currentSessions.map(
             s => `${s.startTime}-${s.endTime}: ${s.name} (${s.category})`
@@ -193,10 +200,11 @@ router.post('/pivot', async (req, res) => {
         }
         if (!Array.isArray(sessionsArr)) sessionsArr = [];
 
-        await pool.query(`
-          INSERT INTO daily_overrides (userId, date, reason) VALUES ($1, $2, $3)
-          ON CONFLICT(userId, date) DO UPDATE SET reason = $3, createdAt = NOW()
-        `, [req.userId, date, reason]);
+        await DailyOverride.findOneAndUpdate(
+            { userId: req.userId, date },
+            { $set: { reason } },
+            { upsert: true }
+        );
 
         res.json({ sessions: sessionsArr, summary: parsed.summary || 'Schedule restructured' });
     } catch (error) {
@@ -208,21 +216,18 @@ router.post('/pivot', async (req, res) => {
 function getDefaultSchedule(description, lcTarget, skillFocuses = []) {
     const lower = description.toLowerCase();
 
-    // ─── Parse user's life from their description ───
     const hasCollege = /college|university|class|campus|lectures?|semester/.test(lower);
     const hasWork = /work|job|office|9.to.5|intern|company/.test(lower);
     const hasGym = /gym|workout|exercise|lift|run|jog|fitness|crossfit/.test(lower);
     const hasCommute = /commute|travel|drive|bus|metro|train/.test(lower);
     const hasCooking = /cook|meal\s*prep|breakfast|lunch|dinner/.test(lower);
 
-    // Extract time patterns
     const collegeMatch = lower.match(/college\s*(?:from\s*)?(\d{1,2})(?::(\d{2}))?\s*(?:am|pm)?\s*(?:to|-)\s*(\d{1,2})(?::(\d{2}))?\s*(?:am|pm)?/);
     const workMatch = lower.match(/work\s*(?:from\s*)?(\d{1,2})(?::(\d{2}))?\s*(?:am|pm)?\s*(?:to|-)\s*(\d{1,2})(?::(\d{2}))?\s*(?:am|pm)?/);
     const gymMatch = lower.match(/gym\s*(?:at|around|by)?\s*(\d{1,2})(?::(\d{2}))?\s*(?:am|pm)?/);
     const sleepMatch = lower.match(/sleep\s*(?:at|by|around)?\s*(\d{1,2})(?::(\d{2}))?\s*(?:am|pm)?/i);
     const wakeMatch = lower.match(/(?:wake|up|morning)\s*(?:at|by|around)?\s*(\d{1,2})(?::(\d{2}))?\s*(?:am|pm)?/i);
 
-    // Determine key time anchors (24h format)
     let fixedStart = '08:00', fixedEnd = '16:00', fixedName = 'College';
     if (collegeMatch) {
         let sh = parseInt(collegeMatch[1]), eh = parseInt(collegeMatch[3]);
@@ -245,56 +250,29 @@ function getDefaultSchedule(description, lcTarget, skillFocuses = []) {
     const slotAfterFixed = parseInt(fixedEnd.split(':')[0]);
     const gymTime = gymMatch ? parseInt(gymMatch[1]) + (parseInt(gymMatch[1]) < 6 ? 12 : 0) : (slotAfterFixed + 0.5);
 
-    // Skill names
     const skills = skillFocuses.length > 0 ? skillFocuses : ['Coding Skills'];
 
-    // ═══ Build weekday schedule ═══
     const buildWeekday = (dayIndex) => {
         const s = [];
         const hasFix = hasCollege || hasWork;
 
-        // Morning routine
         if (wakeMatch || true) {
             const wakeH = wakeMatch ? parseInt(wakeMatch[1]) : (hasFix ? 7 : 8);
-            s.push({
-                name: 'Morning Routine', startTime: `${String(wakeH).padStart(2, '0')}:00`,
-                endTime: `${String(wakeH).padStart(2, '0')}:30`,
-                type: 'habit', category: 'other', icon: '🌅', color: '#f59e0b', items: []
-            });
+            s.push({ name: 'Morning Routine', startTime: `${String(wakeH).padStart(2, '0')}:00`, endTime: `${String(wakeH).padStart(2, '0')}:30`, type: 'habit', category: 'other', icon: '🌅', color: '#f59e0b', items: [] });
         }
 
-        // Main fixed block (college/work)
         if (hasFix) {
-            s.push({
-                name: fixedName, startTime: fixedStart, endTime: fixedEnd,
-                type: 'fixed', category: hasCollege ? 'college' : 'other',
-                icon: hasCollege ? '🎓' : '💼',
-                color: hasCollege ? '#3b82f6' : '#6366f1', items: []
-            });
+            s.push({ name: fixedName, startTime: fixedStart, endTime: fixedEnd, type: 'fixed', category: hasCollege ? 'college' : 'other', icon: hasCollege ? '🎓' : '💼', color: hasCollege ? '#3b82f6' : '#6366f1', items: [] });
         }
 
-        // Gym (if mentioned)
         if (hasGym) {
             const gymH = Math.floor(gymTime);
-            const gymStart = `${String(gymH).padStart(2, '0')}:00`;
-            const gymEndH = gymH + 1;
-            s.push({
-                name: 'Gym Session', startTime: gymStart,
-                endTime: `${String(gymEndH).padStart(2, '0')}:00`,
-                type: 'habit', category: 'gym', icon: '💪', color: '#ef4444', items: []
-            });
+            s.push({ name: 'Gym Session', startTime: `${String(gymH).padStart(2, '0')}:00`, endTime: `${String(gymH + 1).padStart(2, '0')}:00`, type: 'habit', category: 'gym', icon: '💪', color: '#ef4444', items: [] });
         }
 
-        // LeetCode session with difficulty distribution
         const lcSlot = hasFix ? (hasGym ? Math.floor(gymTime) + 1 : slotAfterFixed + 1) : 9;
         const lcDuration = Math.min(Math.ceil(lcTarget / 2), 3);
-        const diffMixes = [
-            { easy: 0.4, med: 0.4, hard: 0.2 },
-            { easy: 0.3, med: 0.5, hard: 0.2 },
-            { easy: 0.2, med: 0.4, hard: 0.4 },
-            { easy: 0.4, med: 0.3, hard: 0.3 },
-            { easy: 0.3, med: 0.4, hard: 0.3 },
-        ];
+        const diffMixes = [{ easy: 0.4, med: 0.4, hard: 0.2 }, { easy: 0.3, med: 0.5, hard: 0.2 }, { easy: 0.2, med: 0.4, hard: 0.4 }, { easy: 0.4, med: 0.3, hard: 0.3 }, { easy: 0.3, med: 0.4, hard: 0.3 }];
         const mix = diffMixes[dayIndex % 5];
         const nEasy = Math.max(1, Math.round(lcTarget * mix.easy));
         const nHard = Math.max(0, Math.round(lcTarget * mix.hard));
@@ -303,41 +281,21 @@ function getDefaultSchedule(description, lcTarget, skillFocuses = []) {
         for (let i = 0; i < nEasy; i++) lcItems.push({ title: `LC Easy #${i + 1}`, category: 'leetcode', targetCount: 1 });
         for (let i = 0; i < nMed; i++) lcItems.push({ title: `LC Medium #${i + 1}`, category: 'leetcode', targetCount: 1 });
         for (let i = 0; i < nHard; i++) lcItems.push({ title: `LC Hard #${i + 1}`, category: 'leetcode', targetCount: 1 });
-        s.push({
-            name: 'Deep Work — LeetCode', startTime: `${String(lcSlot).padStart(2, '0')}:00`,
-            endTime: `${String(lcSlot + lcDuration).padStart(2, '0')}:00`,
-            type: 'productive', category: 'leetcode', icon: '🧩', color: '#f59e0b', items: lcItems
-        });
+        s.push({ name: 'Deep Work — LeetCode', startTime: `${String(lcSlot).padStart(2, '0')}:00`, endTime: `${String(lcSlot + lcDuration).padStart(2, '0')}:00`, type: 'productive', category: 'leetcode', icon: '🧩', color: '#f59e0b', items: lcItems });
 
-        // Skill session
         const skillSlot = lcSlot + lcDuration + (hasCooking ? 1 : 0);
         const skillName = skills[dayIndex % skills.length];
-        s.push({
-            name: `Skill — ${skillName}`, startTime: `${String(skillSlot).padStart(2, '0')}:00`,
-            endTime: `${String(Math.min(skillSlot + 2, 22)).padStart(2, '0')}:00`,
-            type: 'productive', category: 'skill', icon: '💻', color: '#8b5cf6',
-            items: [{ title: `Practice ${skillName}`, category: 'skill', targetCount: 1 }]
-        });
+        s.push({ name: `Skill — ${skillName}`, startTime: `${String(skillSlot).padStart(2, '0')}:00`, endTime: `${String(Math.min(skillSlot + 2, 22)).padStart(2, '0')}:00`, type: 'productive', category: 'skill', icon: '💻', color: '#8b5cf6', items: [{ title: `Practice ${skillName}`, category: 'skill', targetCount: 1 }] });
 
-        // Dinner
-        s.push({
-            name: 'Dinner & Chill', startTime: `${String(Math.min(skillSlot + 2, 21)).padStart(2, '0')}:00`,
-            endTime: `${String(Math.min(sleepHour, 23)).padStart(2, '0')}:00`,
-            type: 'break', category: 'break', icon: '🍽️', color: '#64748b', items: []
-        });
+        s.push({ name: 'Dinner & Chill', startTime: `${String(Math.min(skillSlot + 2, 21)).padStart(2, '0')}:00`, endTime: `${String(Math.min(sleepHour, 23)).padStart(2, '0')}:00`, type: 'break', category: 'break', icon: '🍽️', color: '#64748b', items: [] });
 
         s.sort((a, b) => a.startTime.localeCompare(b.startTime));
         return deOverlap(s);
     };
 
-    // ═══ Build weekend schedule ═══
     const buildWeekend = (dayIndex) => {
         const s = [];
-
-        s.push({
-            name: 'Morning Routine', startTime: '08:30', endTime: '09:00',
-            type: 'habit', category: 'other', icon: '🌅', color: '#f59e0b', items: []
-        });
+        s.push({ name: 'Morning Routine', startTime: '08:30', endTime: '09:00', type: 'habit', category: 'other', icon: '🌅', color: '#f59e0b', items: [] });
 
         const lcDuration = Math.min(Math.ceil(lcTarget / 2), 3);
         const nEasy = Math.max(1, Math.round(lcTarget * 0.2));
@@ -347,43 +305,18 @@ function getDefaultSchedule(description, lcTarget, skillFocuses = []) {
         for (let i = 0; i < nEasy; i++) weekendLcItems.push({ title: `LC Easy #${i + 1}`, category: 'leetcode', targetCount: 1 });
         for (let i = 0; i < nMed; i++) weekendLcItems.push({ title: `LC Medium #${i + 1}`, category: 'leetcode', targetCount: 1 });
         for (let i = 0; i < nHard; i++) weekendLcItems.push({ title: `LC Hard #${i + 1}`, category: 'leetcode', targetCount: 1 });
-        s.push({
-            name: 'Deep Work — LeetCode', startTime: '09:00',
-            endTime: `${String(9 + lcDuration).padStart(2, '0')}:00`,
-            type: 'productive', category: 'leetcode', icon: '🧩', color: '#f59e0b',
-            items: weekendLcItems
-        });
+        s.push({ name: 'Deep Work — LeetCode', startTime: '09:00', endTime: `${String(9 + lcDuration).padStart(2, '0')}:00`, type: 'productive', category: 'leetcode', icon: '🧩', color: '#f59e0b', items: weekendLcItems });
 
-        s.push({
-            name: 'Lunch Break', startTime: '12:00', endTime: '13:00',
-            type: 'break', category: 'meal', icon: '🍕', color: '#64748b', items: []
-        });
-
-        s.push({
-            name: 'Project Work', startTime: '13:00', endTime: '16:00',
-            type: 'productive', category: 'project', icon: '🚀', color: '#10b981',
-            items: [{ title: 'Build / Code project', category: 'project', targetCount: 1 }]
-        });
+        s.push({ name: 'Lunch Break', startTime: '12:00', endTime: '13:00', type: 'break', category: 'meal', icon: '🍕', color: '#64748b', items: [] });
+        s.push({ name: 'Project Work', startTime: '13:00', endTime: '16:00', type: 'productive', category: 'project', icon: '🚀', color: '#10b981', items: [{ title: 'Build / Code project', category: 'project', targetCount: 1 }] });
 
         if (hasGym) {
-            s.push({
-                name: 'Gym Session', startTime: '16:30', endTime: '17:30',
-                type: 'habit', category: 'gym', icon: '💪', color: '#ef4444', items: []
-            });
+            s.push({ name: 'Gym Session', startTime: '16:30', endTime: '17:30', type: 'habit', category: 'gym', icon: '💪', color: '#ef4444', items: [] });
         }
 
         const skillName = skills[(dayIndex + 1) % skills.length];
-        s.push({
-            name: `Skill — ${skillName}`, startTime: hasGym ? '18:00' : '16:30',
-            endTime: hasGym ? '19:30' : '18:30',
-            type: 'productive', category: 'skill', icon: '💻', color: '#8b5cf6',
-            items: [{ title: `Deep dive: ${skillName}`, category: 'skill', targetCount: 1 }]
-        });
-
-        s.push({
-            name: 'Dinner & Chill', startTime: '20:00', endTime: '22:00',
-            type: 'break', category: 'break', icon: '🍽️', color: '#64748b', items: []
-        });
+        s.push({ name: `Skill — ${skillName}`, startTime: hasGym ? '18:00' : '16:30', endTime: hasGym ? '19:30' : '18:30', type: 'productive', category: 'skill', icon: '💻', color: '#8b5cf6', items: [{ title: `Deep dive: ${skillName}`, category: 'skill', targetCount: 1 }] });
+        s.push({ name: 'Dinner & Chill', startTime: '20:00', endTime: '22:00', type: 'break', category: 'break', icon: '🍽️', color: '#64748b', items: [] });
 
         s.sort((a, b) => a.startTime.localeCompare(b.startTime));
         return deOverlap(s);
@@ -394,12 +327,8 @@ function getDefaultSchedule(description, lcTarget, skillFocuses = []) {
         const result = [sessions[0]];
         for (let i = 1; i < sessions.length; i++) {
             const prev = result[result.length - 1];
-            if (sessions[i].startTime < prev.endTime) {
-                sessions[i].startTime = prev.endTime;
-            }
-            if (sessions[i].startTime < sessions[i].endTime) {
-                result.push(sessions[i]);
-            }
+            if (sessions[i].startTime < prev.endTime) sessions[i].startTime = prev.endTime;
+            if (sessions[i].startTime < sessions[i].endTime) result.push(sessions[i]);
         }
         return result;
     }
@@ -407,22 +336,12 @@ function getDefaultSchedule(description, lcTarget, skillFocuses = []) {
     const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
     const sessions = {};
     DAYS.forEach((day, i) => {
-        sessions[day] = (day === 'Saturday' || day === 'Sunday')
-            ? buildWeekend(i)
-            : buildWeekday(i + 1); // 1-5 for weekday patterns
+        sessions[day] = (day === 'Saturday' || day === 'Sunday') ? buildWeekend(i) : buildWeekday(i + 1);
     });
 
-    const detections = [
-        hasCollege && `${fixedName} ${fixedStart}-${fixedEnd}`,
-        hasGym && 'Gym included',
-        hasCommute && 'Commute accounted for',
-    ].filter(Boolean).join('. ');
+    const detections = [hasCollege && `${fixedName} ${fixedStart}-${fixedEnd}`, hasGym && 'Gym included', hasCommute && 'Commute accounted for'].filter(Boolean).join('. ');
 
-    return {
-        sessions,
-        summary: `Personalized schedule generated. ${detections}. ${lcTarget} LeetCode/day. Skills: ${skills.join(', ')}.`,
-    };
+    return { sessions, summary: `Personalized schedule generated. ${detections}. ${lcTarget} LeetCode/day. Skills: ${skills.join(', ')}.` };
 }
 
 export default router;
-

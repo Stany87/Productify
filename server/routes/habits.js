@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import pool from '../db.js';
+import DailyHabit from '../models/DailyHabit.js';
+import UserProfile from '../models/UserProfile.js';
 
 const router = Router();
 
@@ -12,24 +13,24 @@ function getTodayKey() {
 router.get('/:date', async (req, res) => {
   try {
     const { date } = req.params;
-    const { rows: profileRows } = await pool.query('SELECT waterTarget as "waterTarget" FROM user_profile WHERE userId = $1', [req.userId]);
-    const waterTarget = profileRows[0]?.waterTarget || 4.0;
+    const profile = await UserProfile.findOne({ userId: req.userId }).lean();
+    const waterTarget = profile?.waterTarget || 4.0;
 
-    await pool.query(`
-      INSERT INTO daily_habits (userId, date, habitType, targetValue) 
-      VALUES ($1, $2, 'water', $3)
-      ON CONFLICT (userId, date, habitType) DO NOTHING
-    `, [req.userId, date, waterTarget]);
+    await DailyHabit.findOneAndUpdate(
+      { userId: req.userId, date, habitType: 'water' },
+      { $setOnInsert: { targetValue: waterTarget, currentValue: 0 } },
+      { upsert: true, new: true }
+    );
 
-    await pool.query(`
-      INSERT INTO daily_habits (userId, date, habitType, targetValue) 
-      VALUES ($1, $2, 'workout', 1)
-      ON CONFLICT (userId, date, habitType) DO NOTHING
-    `, [req.userId, date]);
+    await DailyHabit.findOneAndUpdate(
+      { userId: req.userId, date, habitType: 'workout' },
+      { $setOnInsert: { targetValue: 1, currentValue: 0 } },
+      { upsert: true, new: true }
+    );
 
-    const { rows: habits } = await pool.query('SELECT * FROM daily_habits WHERE userId = $1 AND date = $2', [req.userId, date]);
+    const habits = await DailyHabit.find({ userId: req.userId, date }).lean();
     const result = {};
-    habits.forEach(h => { result[h.habittype] = h; });
+    habits.forEach(h => { result[h.habitType] = h; });
     res.json(result);
   } catch (err) {
     console.error('Habits GET error:', err);
@@ -42,18 +43,25 @@ router.post('/water', async (req, res) => {
   try {
     const { amount } = req.body;
     const today = getTodayKey();
-    const { rows: profileRows } = await pool.query('SELECT waterTarget as "waterTarget" FROM user_profile WHERE userId = $1', [req.userId]);
-    const target = profileRows[0]?.waterTarget || 4.0;
+    const profile = await UserProfile.findOne({ userId: req.userId }).lean();
+    const target = profile?.waterTarget || 4.0;
 
-    await pool.query(`
-      INSERT INTO daily_habits (userId, date, habitType, targetValue, currentValue)
-      VALUES ($1, $2, 'water', $3, $4)
-      ON CONFLICT(userId, date, habitType)
-      DO UPDATE SET currentValue = LEAST(daily_habits.currentValue + $4, daily_habits.targetValue)
-    `, [req.userId, today, target, amount || 0.5]);
+    const habit = await DailyHabit.findOneAndUpdate(
+      { userId: req.userId, date: today, habitType: 'water' },
+      {
+        $setOnInsert: { targetValue: target },
+        $inc: { currentValue: amount || 0.5 }
+      },
+      { upsert: true, new: true }
+    );
 
-    const { rows } = await pool.query("SELECT * FROM daily_habits WHERE userId = $1 AND date = $2 AND habitType = 'water'", [req.userId, today]);
-    res.json(rows[0]);
+    // Cap at target
+    if (habit.currentValue > habit.targetValue) {
+      habit.currentValue = habit.targetValue;
+      await habit.save();
+    }
+
+    res.json(habit.toObject());
   } catch (err) {
     console.error('Water update error:', err);
     res.status(500).json({ error: 'Failed' });
@@ -65,15 +73,15 @@ router.post('/workout', async (req, res) => {
   try {
     const today = getTodayKey();
 
-    await pool.query(`
-      INSERT INTO daily_habits (userId, date, habitType, targetValue, currentValue)
-      VALUES ($1, $2, 'workout', 1, 1)
-      ON CONFLICT(userId, date, habitType)
-      DO UPDATE SET currentValue = CASE WHEN daily_habits.currentValue = 0 THEN 1 ELSE 0 END
-    `, [req.userId, today]);
+    let habit = await DailyHabit.findOne({ userId: req.userId, date: today, habitType: 'workout' });
+    if (!habit) {
+      habit = await DailyHabit.create({ userId: req.userId, date: today, habitType: 'workout', targetValue: 1, currentValue: 1 });
+    } else {
+      habit.currentValue = habit.currentValue === 0 ? 1 : 0;
+      await habit.save();
+    }
 
-    const { rows } = await pool.query("SELECT * FROM daily_habits WHERE userId = $1 AND date = $2 AND habitType = 'workout'", [req.userId, today]);
-    res.json(rows[0]);
+    res.json(habit.toObject());
   } catch (err) {
     console.error('Workout update error:', err);
     res.status(500).json({ error: 'Failed' });
@@ -81,4 +89,3 @@ router.post('/workout', async (req, res) => {
 });
 
 export default router;
-

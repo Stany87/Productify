@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import pool from '../db.js';
 import { JWT_SECRET } from '../middleware/auth.js';
+import User from '../models/User.js';
+import UserProfile from '../models/UserProfile.js';
 
 const router = Router();
 
@@ -19,35 +20,26 @@ router.post('/register', async (req, res) => {
             return res.status(400).json({ error: 'Password must be at least 6 characters' });
         }
 
-        // Check if email exists
-        const { rows: existingRows } = await pool.query(
-            'SELECT id FROM users WHERE email = $1',
-            [email.toLowerCase().trim()]
-        );
-
-        if (existingRows.length > 0) {
+        const existing = await User.findOne({ email: email.toLowerCase().trim() });
+        if (existing) {
             return res.status(409).json({ error: 'Email already registered' });
         }
 
         const passwordHash = await bcrypt.hash(password, 10);
-        const { rows: userRows } = await pool.query(
-            'INSERT INTO users (email, displayName, passwordHash) VALUES ($1, $2, $3) RETURNING id',
-            [email.toLowerCase().trim(), displayName?.trim() || 'User', passwordHash]
-        );
-
-        const userId = userRows[0].id;
+        const user = await User.create({
+            email: email.toLowerCase().trim(),
+            displayName: displayName?.trim() || 'User',
+            passwordHash,
+        });
 
         // Create user profile
-        await pool.query(
-            'INSERT INTO user_profile (userId, lifeDescription) VALUES ($1, $2)',
-            [userId, '']
-        );
+        await UserProfile.create({ userId: user._id, lifeDescription: '' });
 
-        const token = jwt.sign({ userId }, JWT_SECRET, { expiresIn: '30d' });
+        const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: '30d' });
 
         res.status(201).json({
             token,
-            user: { id: userId, email: email.toLowerCase().trim(), displayName: displayName?.trim() || 'User' },
+            user: { id: user._id, email: user.email, displayName: user.displayName },
         });
     } catch (err) {
         console.error('Registration error:', err);
@@ -64,26 +56,21 @@ router.post('/login', async (req, res) => {
             return res.status(400).json({ error: 'Email and password are required' });
         }
 
-        const { rows } = await pool.query(
-            'SELECT * FROM users WHERE email = $1',
-            [email.toLowerCase().trim()]
-        );
-
-        const user = rows[0];
+        const user = await User.findOne({ email: email.toLowerCase().trim() });
         if (!user) {
             return res.status(401).json({ error: 'Invalid email or password' });
         }
 
-        const valid = await bcrypt.compare(password, user.passwordhash); // Postgres lowers column names unless quoted
+        const valid = await bcrypt.compare(password, user.passwordHash);
         if (!valid) {
             return res.status(401).json({ error: 'Invalid email or password' });
         }
 
-        const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '30d' });
+        const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: '30d' });
 
         res.json({
             token,
-            user: { id: user.id, email: user.email, displayName: user.displayname },
+            user: { id: user._id, email: user.email, displayName: user.displayName },
         });
     } catch (err) {
         console.error('Login error:', err);
@@ -101,18 +88,13 @@ router.get('/me', async (req, res) => {
     try {
         const token = header.slice(7);
         const payload = jwt.verify(token, JWT_SECRET);
-        const { rows } = await pool.query(
-            'SELECT id, email, displayName as "displayName", createdAt as "createdAt" FROM users WHERE id = $1',
-            [payload.userId]
-        );
-        const user = rows[0];
+        const user = await User.findById(payload.userId).select('email displayName createdAt');
 
         if (!user) return res.status(401).json({ error: 'User not found' });
-        res.json(user);
+        res.json({ id: user._id, email: user.email, displayName: user.displayName, createdAt: user.createdAt });
     } catch (err) {
         return res.status(401).json({ error: 'Invalid token' });
     }
 });
 
 export default router;
-

@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import pool from '../db.js';
+import PunishmentBacklog from '../models/PunishmentBacklog.js';
+import DailySession from '../models/DailySession.js';
 
 const router = Router();
 
@@ -17,11 +18,9 @@ function getTomorrowKey() {
 // GET /api/punishment
 router.get('/', async (req, res) => {
     try {
-        const { rows } = await pool.query(
-            'SELECT id, userId, title, category, missedCount as "missedCount", originalDate as "originalDate", sourceSession as "sourceSession", assignedToDate as "assignedToDate", resolved, createdAt as "createdAt" FROM punishment_backlog WHERE userId = $1 AND resolved = 0 ORDER BY createdAt DESC',
-            [req.userId]
-        );
-        res.json(rows);
+        const items = await PunishmentBacklog.find({ userId: req.userId, resolved: 0 })
+            .sort({ createdAt: -1 }).lean();
+        res.json(items);
     } catch (err) {
         res.status(500).json({ error: 'Failed' });
     }
@@ -30,11 +29,9 @@ router.get('/', async (req, res) => {
 // GET /api/punishment/history
 router.get('/history', async (req, res) => {
     try {
-        const { rows } = await pool.query(
-            'SELECT * FROM punishment_backlog WHERE userId = $1 ORDER BY createdAt DESC LIMIT 50',
-            [req.userId]
-        );
-        res.json(rows);
+        const items = await PunishmentBacklog.find({ userId: req.userId })
+            .sort({ createdAt: -1 }).limit(50).lean();
+        res.json(items);
     } catch (err) {
         res.status(500).json({ error: 'Failed' });
     }
@@ -42,54 +39,61 @@ router.get('/history', async (req, res) => {
 
 // POST /api/punishment/process
 router.post('/process', async (req, res) => {
-    const client = await pool.connect();
     try {
         const today = getTodayKey();
         const tomorrow = getTomorrowKey();
 
-        const { rows: incomplete } = await client.query(`
-            SELECT si.*, ds.name as sessionName, ds.date
-            FROM session_items si
-            JOIN daily_sessions ds ON si.sessionId = ds.id
-            WHERE ds.userId = $1 AND ds.date < $2 AND si.completed = 0 AND si.targetCount > si.completedCount
-        `, [req.userId, today]);
+        // Find incomplete items from past sessions
+        const pastSessions = await DailySession.find({
+            userId: req.userId,
+            date: { $lt: today },
+            'items.completed': 0,
+        }).lean();
+
+        const incomplete = [];
+        for (const session of pastSessions) {
+            for (const item of session.items) {
+                if (item.completed === 0 && item.targetCount > item.completedCount) {
+                    incomplete.push({ ...item, sessionName: session.name, date: session.date });
+                }
+            }
+        }
 
         if (incomplete.length === 0) {
             return res.json({ processed: 0, items: [] });
         }
 
-        await client.query('BEGIN');
         const results = [];
-
         for (const item of incomplete) {
-            const missed = item.targetcount - item.completedcount;
-            const { rows: existingRows } = await client.query(
-                'SELECT * FROM punishment_backlog WHERE userId = $1 AND title = $2 AND originalDate = $3 AND resolved = 0',
-                [req.userId, item.title, item.date]
-            );
+            const missed = item.targetCount - item.completedCount;
+            const existing = await PunishmentBacklog.findOne({
+                userId: req.userId, title: item.title, originalDate: item.date, resolved: 0
+            });
 
-            if (existingRows.length === 0) {
-                await client.query(
-                    'INSERT INTO punishment_backlog (userId, title, category, missedCount, originalDate, sourceSession, assignedToDate) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-                    [req.userId, item.title, item.category, missed, item.date, item.sessionname, tomorrow]
-                );
+            if (!existing) {
+                await PunishmentBacklog.create({
+                    userId: req.userId,
+                    title: item.title,
+                    category: item.category,
+                    missedCount: missed,
+                    originalDate: item.date,
+                    sourceSession: item.sessionName,
+                    assignedToDate: tomorrow,
+                });
                 results.push({ title: item.title, missed, from: item.date });
             }
         }
 
-        await client.query(`
-            UPDATE daily_sessions SET status = 'missed'
-            WHERE userId = $1 AND date < $2 AND status != 'completed'
-        `, [req.userId, today]);
+        // Mark old incomplete sessions as missed
+        await DailySession.updateMany(
+            { userId: req.userId, date: { $lt: today }, status: { $ne: 'completed' } },
+            { $set: { status: 'missed' } }
+        );
 
-        await client.query('COMMIT');
         res.json({ processed: results.length, items: results });
     } catch (err) {
-        await client.query('ROLLBACK');
         console.error('Punishment process error:', err);
         res.status(500).json({ error: 'Process failed' });
-    } finally {
-        client.release();
     }
 });
 
@@ -98,19 +102,15 @@ router.put('/:id/tick', async (req, res) => {
     try {
         const { id } = req.params;
         const { count } = req.body;
-        const { rows } = await pool.query('SELECT * FROM punishment_backlog WHERE id = $1 AND userId = $2', [id, req.userId]);
-        const item = rows[0];
+        const item = await PunishmentBacklog.findOne({ _id: id, userId: req.userId });
         if (!item) return res.status(404).json({ error: 'Not found' });
 
-        const newMissed = Math.max(0, item.missedcount - (count || 1));
-        if (newMissed === 0) {
-            await pool.query('UPDATE punishment_backlog SET missedCount = 0, resolved = 1 WHERE id = $1 AND userId = $2', [id, req.userId]);
-        } else {
-            await pool.query('UPDATE punishment_backlog SET missedCount = $1 WHERE id = $2 AND userId = $3', [newMissed, id, req.userId]);
-        }
+        const newMissed = Math.max(0, item.missedCount - (count || 1));
+        item.missedCount = newMissed;
+        if (newMissed === 0) item.resolved = 1;
+        await item.save();
 
-        const { rows: updatedRows } = await pool.query('SELECT * FROM punishment_backlog WHERE id = $1 AND userId = $2', [id, req.userId]);
-        res.json(updatedRows[0]);
+        res.json(item.toObject());
     } catch (err) {
         res.status(500).json({ error: 'Tick failed' });
     }
@@ -120,16 +120,17 @@ router.put('/:id/tick', async (req, res) => {
 router.put('/:id/resolve', async (req, res) => {
     try {
         const { id } = req.params;
-        const { rows } = await pool.query('SELECT * FROM punishment_backlog WHERE id = $1 AND userId = $2', [id, req.userId]);
-        const item = rows[0];
+        const item = await PunishmentBacklog.findOne({ _id: id, userId: req.userId });
         if (!item) return res.status(404).json({ error: 'Not found' });
 
-        await pool.query('UPDATE punishment_backlog SET resolved = 1 WHERE id = $1 AND userId = $2', [id, req.userId]);
+        item.resolved = 1;
+        await item.save();
 
+        // Also complete matching backlog items in sessions
         const backlogTitle = `${item.title} (BACKLOG)`;
-        await pool.query(
-            "UPDATE session_items SET completed = 1, completedCount = targetCount WHERE title = $1 AND completed = 0",
-            [backlogTitle]
+        await DailySession.updateMany(
+            { userId: req.userId, 'items.title': backlogTitle, 'items.completed': 0 },
+            { $set: { 'items.$.completed': 1, 'items.$.completedCount': 1 } }
         );
 
         res.json({ success: true });
@@ -139,4 +140,3 @@ router.put('/:id/resolve', async (req, res) => {
 });
 
 export default router;
-

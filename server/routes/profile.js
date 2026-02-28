@@ -1,27 +1,20 @@
 import { Router } from 'express';
-import pool from '../db.js';
+import UserProfile from '../models/UserProfile.js';
+import User from '../models/User.js';
 
 const router = Router();
 
 // GET /api/profile
 router.get('/', async (req, res) => {
   try {
-    const { rows: profileRows } = await pool.query(`
-      SELECT userId as "userId", lifeDescription as "lifeDescription", 
-             leetcodeTarget as "leetcodeTarget", leetcodeUsername as "leetcodeUsername", 
-             skillFocuses as "skillFocuses", waterTarget as "waterTarget", 
-             updatedAt as "updatedAt" 
-      FROM user_profile WHERE userId = $1
-    `, [req.userId]);
-
-    let profile = profileRows[0];
+    let profile = await UserProfile.findOne({ userId: req.userId }).lean();
     if (!profile) {
-      await pool.query('INSERT INTO user_profile (userId, lifeDescription) VALUES ($1, $2) ON CONFLICT (userId) DO NOTHING', [req.userId, '']);
-      const { rows } = await pool.query('SELECT * FROM user_profile WHERE userId = $1', [req.userId]);
-      profile = rows[0];
+      profile = await UserProfile.create({ userId: req.userId, lifeDescription: '' });
+      profile = profile.toObject();
     }
     res.json(profile);
   } catch (err) {
+    console.error('Profile GET error:', err);
     res.status(500).json({ error: 'Failed' });
   }
 });
@@ -31,27 +24,22 @@ router.put('/', async (req, res) => {
   try {
     const { lifeDescription, leetcodeTarget, leetcodeUsername, skillFocuses, waterTarget } = req.body;
 
-    await pool.query(`
-      UPDATE user_profile SET
-        lifeDescription = COALESCE($1, lifeDescription),
-        leetcodeTarget = COALESCE($2, leetcodeTarget),
-        leetcodeUsername = COALESCE($3, leetcodeUsername),
-        skillFocuses = COALESCE($4, skillFocuses),
-        waterTarget = COALESCE($5, waterTarget),
-        updatedAt = NOW()
-      WHERE userId = $6
-    `, [
-      lifeDescription ?? null,
-      leetcodeTarget ?? null,
-      leetcodeUsername ?? null,
-      skillFocuses ? (typeof skillFocuses === 'string' ? skillFocuses : JSON.stringify(skillFocuses)) : null,
-      waterTarget ?? null,
-      req.userId
-    ]);
+    const update = {};
+    if (lifeDescription !== undefined) update.lifeDescription = lifeDescription;
+    if (leetcodeTarget !== undefined) update.leetcodeTarget = leetcodeTarget;
+    if (leetcodeUsername !== undefined) update.leetcodeUsername = leetcodeUsername;
+    if (skillFocuses !== undefined) update.skillFocuses = typeof skillFocuses === 'string' ? skillFocuses : JSON.stringify(skillFocuses);
+    if (waterTarget !== undefined) update.waterTarget = waterTarget;
 
-    const { rows } = await pool.query('SELECT * FROM user_profile WHERE userId = $1', [req.userId]);
-    res.json(rows[0]);
+    const profile = await UserProfile.findOneAndUpdate(
+      { userId: req.userId },
+      { $set: update },
+      { new: true, upsert: true }
+    ).lean();
+
+    res.json(profile);
   } catch (err) {
+    console.error('Profile PUT error:', err);
     res.status(500).json({ error: 'Update failed' });
   }
 });
@@ -65,14 +53,14 @@ router.put('/password', async (req, res) => {
     }
 
     const { default: bcrypt } = await import('bcryptjs');
-    const { rows } = await pool.query('SELECT * FROM users WHERE id = $1', [req.userId]);
-    const user = rows[0];
+    const user = await User.findById(req.userId);
 
-    const valid = await bcrypt.compare(currentPassword, user.passwordhash);
+    const valid = await bcrypt.compare(currentPassword, user.passwordHash);
     if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
 
     const hash = await bcrypt.hash(newPassword, 10);
-    await pool.query('UPDATE users SET passwordHash = $1 WHERE id = $2', [hash, req.userId]);
+    user.passwordHash = hash;
+    await user.save();
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Password update failed' });
@@ -80,4 +68,3 @@ router.put('/password', async (req, res) => {
 });
 
 export default router;
-

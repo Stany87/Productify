@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import connectDB from './db.js';
 
 // Fix for __dirname in ESM
 const __dirname = path.resolve();
@@ -21,9 +22,20 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
 
+// Connect to MongoDB before handling any requests
+app.use(async (req, res, next) => {
+    try {
+        await connectDB();
+        next();
+    } catch (err) {
+        console.error('MongoDB connection error:', err);
+        res.status(500).json({ error: 'Database connection failed' });
+    }
+});
+
 // Health check - keep it public
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', version: 'v5-serverless', database: 'supabase' });
+    res.json({ status: 'ok', version: 'v6-mongodb', database: 'mongodb-atlas' });
 });
 
 // Routes
@@ -62,4 +74,3 @@ if (process.env.START_SERVER === 'true') {
 }
 
 export default app;
-

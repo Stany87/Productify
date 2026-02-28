@@ -1,61 +1,56 @@
 import { Router } from 'express';
-import pool from '../db.js';
+import DailySession from '../models/DailySession.js';
+import DailyHabit from '../models/DailyHabit.js';
+import DailyStats from '../models/DailyStats.js';
+import PunishmentBacklog from '../models/PunishmentBacklog.js';
 
 const router = Router();
+
+async function computeStats(userId, date) {
+    const sessions = await DailySession.find({ userId, date }).lean();
+
+    let leetcodeCompleted = 0, leetcodeTarget = 0, sessionsCompleted = 0;
+
+    for (const s of sessions) {
+        if (s.status === 'completed') sessionsCompleted++;
+        for (const item of (s.items || [])) {
+            if (item.category === 'leetcode') {
+                leetcodeTarget += item.targetCount;
+                leetcodeCompleted += item.completedCount;
+            }
+        }
+    }
+
+    const habits = await DailyHabit.find({ userId, date }).lean();
+    const waterHabit = habits.find(h => h.habitType === 'water');
+    const workoutHabit = habits.find(h => h.habitType === 'workout');
+
+    const punishCount = await PunishmentBacklog.countDocuments({ userId, originalDate: date });
+
+    return {
+        date,
+        sessionsCompleted,
+        sessionsTotal: sessions.length,
+        leetcodeCompleted,
+        leetcodeTarget,
+        punishmentItems: punishCount,
+        waterLiters: waterHabit?.currentValue || 0,
+        workoutDone: workoutHabit?.currentValue || 0,
+    };
+}
 
 // GET /api/stats/:date
 router.get('/:date', async (req, res) => {
     try {
         const { date } = req.params;
-
-        const { rows: sessions } = await pool.query('SELECT * FROM daily_sessions WHERE userId = $1 AND date = $2', [req.userId, date]);
-
-        let leetcodeCompleted = 0, leetcodeTarget = 0;
-        let sessionsCompleted = 0;
-
-        for (const s of sessions) {
-            if (s.status === 'completed') sessionsCompleted++;
-            const { rows: items } = await pool.query('SELECT * FROM session_items WHERE sessionId = $1', [s.id]);
-            for (const item of items) {
-                if (item.category === 'leetcode') {
-                    leetcodeTarget += item.targetcount;
-                    leetcodeCompleted += item.completedcount;
-                }
-            }
-        }
-
-        const { rows: habits } = await pool.query('SELECT * FROM daily_habits WHERE userId = $1 AND date = $2', [req.userId, date]);
-        const waterHabit = habits.find(h => h.habittype === 'water');
-        const workoutHabit = habits.find(h => h.habittype === 'workout');
-
-        const { rows: punishRows } = await pool.query(
-            'SELECT COUNT(*) as c FROM punishment_backlog WHERE userId = $1 AND originalDate = $2',
-            [req.userId, date]
-        );
-        const punishmentCount = parseInt(punishRows[0]?.c || 0);
-
-        const stats = {
-            date,
-            sessionsCompleted,
-            sessionsTotal: sessions.length,
-            leetcodeCompleted,
-            leetcodeTarget,
-            punishmentItems: punishmentCount,
-            waterLiters: waterHabit?.currentvalue || 0,
-            workoutDone: workoutHabit?.currentvalue || 0,
-        };
+        const stats = await computeStats(req.userId, date);
 
         // Upsert stats
-        await pool.query(`
-            INSERT INTO daily_stats (userId, date, sessionsCompleted, sessionsTotal, leetcodeCompleted, leetcodeTarget, punishmentItems, waterLiters, workoutDone)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            ON CONFLICT(userId, date) DO UPDATE SET
-              sessionsCompleted = $3, sessionsTotal = $4, leetcodeCompleted = $5, leetcodeTarget = $6,
-              punishmentItems = $7, waterLiters = $8, workoutDone = $9
-        `, [
-            req.userId, date, stats.sessionsCompleted, stats.sessionsTotal, stats.leetcodeCompleted, stats.leetcodeTarget,
-            stats.punishmentItems, stats.waterLiters, stats.workoutDone
-        ]);
+        await DailyStats.findOneAndUpdate(
+            { userId: req.userId, date },
+            { $set: stats },
+            { upsert: true }
+        );
 
         res.json(stats);
     } catch (err) {
@@ -70,52 +65,87 @@ router.get('/range/query', async (req, res) => {
         const { start, end } = req.query;
         if (!start || !end) return res.status(400).json({ error: 'start and end required' });
 
+        // Fetch ALL sessions in the range in ONE query
+        const allSessions = await DailySession.find({
+            userId: req.userId,
+            date: { $gte: start, $lte: end }
+        }).lean();
+
+        // Fetch ALL habits in the range in ONE query
+        const allHabits = await DailyHabit.find({
+            userId: req.userId,
+            date: { $gte: start, $lte: end }
+        }).lean();
+
+        // Fetch ALL punishment counts in the range in ONE query
+        const punishAgg = await PunishmentBacklog.aggregate([
+            { $match: { userId: req.userId, originalDate: { $gte: start, $lte: end } } },
+            { $group: { _id: '$originalDate', count: { $sum: 1 } } }
+        ]);
+        const punishMap = {};
+        punishAgg.forEach(p => { punishMap[p._id] = p.count; });
+
+        // Group by date in JS
+        const sessionsByDate = {};
+        allSessions.forEach(s => {
+            if (!sessionsByDate[s.date]) sessionsByDate[s.date] = [];
+            sessionsByDate[s.date].push(s);
+        });
+
+        const habitsByDate = {};
+        allHabits.forEach(h => {
+            if (!habitsByDate[h.date]) habitsByDate[h.date] = [];
+            habitsByDate[h.date].push(h);
+        });
+
+        // Build date range
         const dates = [];
         const d = new Date(start + 'T00:00:00');
         const endD = new Date(end + 'T00:00:00');
         while (d <= endD) {
-            const localDateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-            dates.push(localDateStr);
+            dates.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
             d.setDate(d.getDate() + 1);
         }
 
-        const results = await Promise.all(dates.map(async (date) => {
-            const { rows: sessions } = await pool.query('SELECT * FROM daily_sessions WHERE userId = $1 AND date = $2', [req.userId, date]);
+        const results = dates.map(date => {
+            const sessions = sessionsByDate[date] || [];
             let leetcodeCompleted = 0, leetcodeTarget = 0, sessionsCompleted = 0;
 
             for (const s of sessions) {
                 if (s.status === 'completed') sessionsCompleted++;
-                const { rows: items } = await pool.query('SELECT * FROM session_items WHERE sessionId = $1', [s.id]);
-                for (const item of items) {
+                for (const item of (s.items || [])) {
                     if (item.category === 'leetcode') {
-                        leetcodeTarget += item.targetcount;
-                        leetcodeCompleted += item.completedcount;
+                        leetcodeTarget += item.targetCount;
+                        leetcodeCompleted += item.completedCount;
                     }
                 }
             }
 
-            const { rows: habits } = await pool.query('SELECT * FROM daily_habits WHERE userId = $1 AND date = $2', [req.userId, date]);
-            const waterLiters = habits.find(h => h.habittype === 'water')?.currentvalue || 0;
-            const workoutDone = habits.find(h => h.habittype === 'workout')?.currentvalue || 0;
+            const habits = habitsByDate[date] || [];
+            const waterLiters = habits.find(h => h.habitType === 'water')?.currentValue || 0;
+            const workoutDone = habits.find(h => h.habitType === 'workout')?.currentValue || 0;
 
-            const { rows: punishRows } = await pool.query('SELECT COUNT(*) as c FROM punishment_backlog WHERE userId = $1 AND originalDate = $2', [req.userId, date]);
-            const punishmentItems = parseInt(punishRows[0]?.c || 0);
+            return {
+                date,
+                sessionsCompleted,
+                sessionsTotal: sessions.length,
+                leetcodeCompleted,
+                leetcodeTarget,
+                punishmentItems: punishMap[date] || 0,
+                waterLiters,
+                workoutDone,
+            };
+        });
 
-            const stat = { date, sessionsCompleted, sessionsTotal: sessions.length, leetcodeCompleted, leetcodeTarget, punishmentItems, waterLiters, workoutDone };
-
-            await pool.query(`
-                INSERT INTO daily_stats (userId, date, sessionsCompleted, sessionsTotal, leetcodeCompleted, leetcodeTarget, punishmentItems, waterLiters, workoutDone)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                ON CONFLICT(userId, date) DO UPDATE SET
-                  sessionsCompleted = $3, sessionsTotal = $4, leetcodeCompleted = $5, leetcodeTarget = $6,
-                  punishmentItems = $7, waterLiters = $8, workoutDone = $9
-            `, [
-                req.userId, date, stat.sessionsCompleted, stat.sessionsTotal, stat.leetcodeCompleted, stat.leetcodeTarget,
-                stat.punishmentItems, stat.waterLiters, stat.workoutDone
-            ]);
-
-            return stat;
+        // Bulk upsert stats
+        const bulkOps = results.map(stat => ({
+            updateOne: {
+                filter: { userId: req.userId, date: stat.date },
+                update: { $set: stat },
+                upsert: true,
+            }
         }));
+        if (bulkOps.length > 0) await DailyStats.bulkWrite(bulkOps);
 
         res.json(results);
     } catch (err) {
@@ -125,4 +155,3 @@ router.get('/range/query', async (req, res) => {
 });
 
 export default router;
-
