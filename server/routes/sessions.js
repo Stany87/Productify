@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import mongoose from 'mongoose';
 import DailySession from '../models/DailySession.js';
 import BaselineSession from '../models/BaselineSession.js';
 import PunishmentBacklog from '../models/PunishmentBacklog.js';
@@ -14,7 +15,7 @@ function getTodayKey() {
 router.get('/today', async (req, res) => {
     try {
         const today = getTodayKey();
-        const sessions = await DailySession.find({ userId: req.userId, date: today }).sort({ startTime: 1 }).lean();
+        const sessions = await DailySession.find({ userId: req.userId, date: today }).sort({ startTime: 1 });
         res.json(sessions);
     } catch (err) {
         console.error('Error fetching today sessions:', err);
@@ -26,7 +27,7 @@ router.get('/today', async (req, res) => {
 router.get('/:date', async (req, res) => {
     try {
         const { date } = req.params;
-        const sessions = await DailySession.find({ userId: req.userId, date }).sort({ startTime: 1 }).lean();
+        const sessions = await DailySession.find({ userId: req.userId, date }).sort({ startTime: 1 });
         res.json(sessions);
     } catch (err) {
         console.error('Error fetching sessions by date:', err);
@@ -41,7 +42,7 @@ router.get('/month/:year/:month', async (req, res) => {
         const prefix = `${year}-${String(month).padStart(2, '0')}`;
 
         const sessions = await DailySession.aggregate([
-            { $match: { userId: req.userId, date: { $regex: `^${prefix}` } } },
+            { $match: { userId: new mongoose.Types.ObjectId(req.userId), date: { $regex: `^${prefix}` } } },
             {
                 $group: {
                     _id: '$date',
@@ -82,7 +83,7 @@ router.post('/generate/:date', async (req, res) => {
                     { dayOfWeek: 8, ...(dow >= 1 && dow <= 5 ? {} : { dayOfWeek: -1 }) },
                     { dayOfWeek: 9, ...(dow === 0 || dow === 6 ? {} : { dayOfWeek: -1 }) },
                 ]
-            }).sort({ startTime: 1 }).lean();
+            }).sort({ startTime: 1 });
 
             sessionsToInsert = baselines.map(b => ({
                 name: b.name,
@@ -99,7 +100,7 @@ router.post('/generate/:date', async (req, res) => {
         // Punishment backlog for this user and date
         const punishments = await PunishmentBacklog.find({
             userId: req.userId, assignedToDate: date, resolved: 0
-        }).lean();
+        });
 
         if (punishments.length > 0) {
             const punishmentItems = punishments.map(p => ({
@@ -164,7 +165,7 @@ router.put('/:id/status', async (req, res) => {
             { _id: id, userId: req.userId },
             { $set: { status } },
             { new: true }
-        ).lean();
+        );
 
         if (status === 'completed' && session?.type === 'punishment') {
             for (const item of session.items) {
@@ -209,7 +210,7 @@ router.put('/:id/track/start', async (req, res) => {
             { _id: id, userId: req.userId },
             { $set: { trackingStartedAt: now, status: 'active' } },
             { new: true }
-        ).lean();
+        );
 
         res.json(session);
     } catch (err) {

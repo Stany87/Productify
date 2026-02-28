@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import mongoose from 'mongoose';
 import DailySession from '../models/DailySession.js';
 import DailyHabit from '../models/DailyHabit.js';
 import DailyStats from '../models/DailyStats.js';
@@ -7,7 +8,7 @@ import PunishmentBacklog from '../models/PunishmentBacklog.js';
 const router = Router();
 
 async function computeStats(userId, date) {
-    const sessions = await DailySession.find({ userId, date }).lean();
+    const sessions = await DailySession.find({ userId, date });
 
     let leetcodeCompleted = 0, leetcodeTarget = 0, sessionsCompleted = 0;
 
@@ -21,7 +22,7 @@ async function computeStats(userId, date) {
         }
     }
 
-    const habits = await DailyHabit.find({ userId, date }).lean();
+    const habits = await DailyHabit.find({ userId, date });
     const waterHabit = habits.find(h => h.habitType === 'water');
     const workoutHabit = habits.find(h => h.habitType === 'workout');
 
@@ -69,17 +70,17 @@ router.get('/range/query', async (req, res) => {
         const allSessions = await DailySession.find({
             userId: req.userId,
             date: { $gte: start, $lte: end }
-        }).lean();
+        });
 
         // Fetch ALL habits in the range in ONE query
         const allHabits = await DailyHabit.find({
             userId: req.userId,
             date: { $gte: start, $lte: end }
-        }).lean();
+        });
 
         // Fetch ALL punishment counts in the range in ONE query
         const punishAgg = await PunishmentBacklog.aggregate([
-            { $match: { userId: req.userId, originalDate: { $gte: start, $lte: end } } },
+            { $match: { userId: new mongoose.Types.ObjectId(req.userId), originalDate: { $gte: start, $lte: end } } },
             { $group: { _id: '$originalDate', count: { $sum: 1 } } }
         ]);
         const punishMap = {};

@@ -7,7 +7,7 @@ const router = Router();
 // GET /api/profile
 router.get('/', async (req, res) => {
   try {
-    let profile = await UserProfile.findOne({ userId: req.userId }).lean();
+    let profile = await UserProfile.findOne({ userId: req.userId });
     if (!profile) {
       profile = await UserProfile.create({ userId: req.userId, lifeDescription: '' });
       profile = profile.toObject();
@@ -35,7 +35,7 @@ router.put('/', async (req, res) => {
       { userId: req.userId },
       { $set: update },
       { new: true, upsert: true }
-    ).lean();
+    );
 
     res.json(profile);
   } catch (err) {

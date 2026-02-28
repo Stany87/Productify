@@ -13,7 +13,7 @@ function getTodayKey() {
 router.get('/:date', async (req, res) => {
   try {
     const { date } = req.params;
-    const profile = await UserProfile.findOne({ userId: req.userId }).lean();
+    const profile = await UserProfile.findOne({ userId: req.userId });
     const waterTarget = profile?.waterTarget || 4.0;
 
     await DailyHabit.findOneAndUpdate(
@@ -28,7 +28,7 @@ router.get('/:date', async (req, res) => {
       { upsert: true, new: true }
     );
 
-    const habits = await DailyHabit.find({ userId: req.userId, date }).lean();
+    const habits = await DailyHabit.find({ userId: req.userId, date });
     const result = {};
     habits.forEach(h => { result[h.habitType] = h; });
     res.json(result);
@@ -43,7 +43,7 @@ router.post('/water', async (req, res) => {
   try {
     const { amount } = req.body;
     const today = getTodayKey();
-    const profile = await UserProfile.findOne({ userId: req.userId }).lean();
+    const profile = await UserProfile.findOne({ userId: req.userId });
     const target = profile?.waterTarget || 4.0;
 
     const habit = await DailyHabit.findOneAndUpdate(

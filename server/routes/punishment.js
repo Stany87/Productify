@@ -19,7 +19,7 @@ function getTomorrowKey() {
 router.get('/', async (req, res) => {
     try {
         const items = await PunishmentBacklog.find({ userId: req.userId, resolved: 0 })
-            .sort({ createdAt: -1 }).lean();
+            .sort({ createdAt: -1 });
         res.json(items);
     } catch (err) {
         res.status(500).json({ error: 'Failed' });
@@ -30,7 +30,7 @@ router.get('/', async (req, res) => {
 router.get('/history', async (req, res) => {
     try {
         const items = await PunishmentBacklog.find({ userId: req.userId })
-            .sort({ createdAt: -1 }).limit(50).lean();
+            .sort({ createdAt: -1 }).limit(50);
         res.json(items);
     } catch (err) {
         res.status(500).json({ error: 'Failed' });
@@ -48,7 +48,7 @@ router.post('/process', async (req, res) => {
             userId: req.userId,
             date: { $lt: today },
             'items.completed': 0,
-        }).lean();
+        });
 
         const incomplete = [];
         for (const session of pastSessions) {

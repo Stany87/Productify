@@ -175,7 +175,7 @@ router.post('/pivot', async (req, res) => {
         const { reason, date } = req.body;
         if (!reason || !date) return res.status(400).json({ error: 'reason and date required' });
 
-        const currentSessions = await DailySession.find({ userId: req.userId, date }).sort({ startTime: 1 }).lean();
+        const currentSessions = await DailySession.find({ userId: req.userId, date }).sort({ startTime: 1 });
 
         const currentScheduleStr = currentSessions.map(
             s => `${s.startTime}-${s.endTime}: ${s.name} (${s.category})`
