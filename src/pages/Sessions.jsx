@@ -60,20 +60,43 @@ export default function Sessions() {
         if (q) setSearchQ(q);
     }, [searchParams]);
 
-    /* Handlers */
+    /* Handlers — OPTIMISTIC: update UI first, API in background */
     const handleToggle = async (session) => {
         const newStatus = session.status === 'completed' ? 'pending' : 'completed';
+        // Optimistic update — instant UI feedback
+        setSessions(prev => prev.map(s =>
+            s.id === session.id ? { ...s, status: newStatus } : s
+        ));
         try {
             await updateSessionStatus(session.id, newStatus);
-            load();
-        } catch { toast.error('Failed'); }
+        } catch {
+            // Rollback on failure
+            setSessions(prev => prev.map(s =>
+                s.id === session.id ? { ...s, status: session.status } : s
+            ));
+            toast.error('Failed to update');
+        }
     };
 
     const handleTick = async (itemId, current, target) => {
+        const newCount = current >= target ? 0 : target;
+        const newCompleted = newCount >= target ? 1 : 0;
+        // Optimistic update — instant UI feedback
+        setSessions(prev => prev.map(s => ({
+            ...s,
+            items: s.items?.map(item =>
+                item.id === itemId
+                    ? { ...item, completedCount: newCount, completed: newCompleted }
+                    : item
+            ),
+        })));
         try {
-            await tickSessionItem(itemId, current >= target ? 0 : target);
+            await tickSessionItem(itemId, newCount);
+        } catch {
+            // Rollback — re-fetch from server
+            toast.error('Failed');
             load();
-        } catch { toast.error('Failed'); }
+        }
     };
 
     const handleWater = async () => {
