@@ -22,20 +22,21 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
 
-// Connect to MongoDB before handling any requests
+// Health check - BEFORE MongoDB middleware so it always responds
+app.get('/api/health', (req, res) => {
+    const hasUri = !!process.env.MONGODB_URI;
+    res.json({ status: 'ok', version: 'v6-mongodb', database: 'mongodb-atlas', mongoConfigured: hasUri });
+});
+
+// Connect to MongoDB before handling any other requests
 app.use(async (req, res, next) => {
     try {
         await connectDB();
         next();
     } catch (err) {
         console.error('MongoDB connection error:', err);
-        res.status(500).json({ error: 'Database connection failed' });
+        res.status(500).json({ error: 'Database connection failed: ' + err.message });
     }
-});
-
-// Health check - keep it public
-app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', version: 'v6-mongodb', database: 'mongodb-atlas' });
 });
 
 // Routes
