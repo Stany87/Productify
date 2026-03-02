@@ -26,7 +26,7 @@ const STAT_CARDS = [
     { key: 'backlog', label: 'Pending Backlog', icon: HiExclamationTriangle, bg: 'bg-white', iconBg: 'bg-[#fef2f2]', border: true },
 ];
 
-const DOW = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 /* ── Custom tooltip ── */
 function ChartTooltip({ active, payload, label }) {

@@ -161,13 +161,29 @@ router.put('/:id/status', async (req, res) => {
         const { id } = req.params;
         const { status } = req.body;
 
-        const session = await DailySession.findOneAndUpdate(
-            { _id: id, userId: req.userId },
-            { $set: { status } },
-            { new: true }
-        );
+        const session = await DailySession.findOne({ _id: id, userId: req.userId });
+        if (!session) return res.status(404).json({ error: 'Session not found' });
 
-        if (status === 'completed' && session?.type === 'punishment') {
+        session.status = status;
+
+        // When completing session, mark ALL items as completed too
+        if (status === 'completed' && session.items?.length > 0) {
+            for (const item of session.items) {
+                item.completedCount = item.targetCount;
+                item.completed = 1;
+            }
+        }
+        // When unchecking session, reset ALL items back to incomplete
+        if (status === 'pending' && session.items?.length > 0) {
+            for (const item of session.items) {
+                item.completedCount = 0;
+                item.completed = 0;
+            }
+        }
+
+        await session.save();
+
+        if (status === 'completed' && session.type === 'punishment') {
             for (const item of session.items) {
                 const origTitle = item.title.replace(/\s*\(BACKLOG\)\s*$/, '');
                 await PunishmentBacklog.updateMany(

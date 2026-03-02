@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 
 // Global plugin: ensure all schemas include `id` as a string copy of `_id`
 // This makes responses compatible with frontends that expect `.id` instead of `._id`
+// Each schema (including subdocument schemas) gets this transform applied independently
 mongoose.plugin((schema) => {
   schema.set('toJSON', {
     virtuals: true,
@@ -9,14 +10,6 @@ mongoose.plugin((schema) => {
     transform: (doc, ret) => {
       ret.id = ret._id?.toString?.() || ret._id;
       delete ret._id;
-      // Also transform nested items arrays (for embedded subdocuments)
-      if (ret.items && Array.isArray(ret.items)) {
-        ret.items = ret.items.map(item => ({
-          ...item,
-          id: item._id?.toString?.() || item._id,
-          _id: undefined,
-        }));
-      }
       return ret;
     },
   });
@@ -26,13 +19,6 @@ mongoose.plugin((schema) => {
     transform: (doc, ret) => {
       ret.id = ret._id?.toString?.() || ret._id;
       delete ret._id;
-      if (ret.items && Array.isArray(ret.items)) {
-        ret.items = ret.items.map(item => ({
-          ...item,
-          id: item._id?.toString?.() || item._id,
-          _id: undefined,
-        }));
-      }
       return ret;
     },
   });

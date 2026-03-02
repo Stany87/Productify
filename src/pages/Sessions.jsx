@@ -63,16 +63,24 @@ export default function Sessions() {
     /* Handlers — OPTIMISTIC: update UI first, API in background */
     const handleToggle = async (session) => {
         const newStatus = session.status === 'completed' ? 'pending' : 'completed';
-        // Optimistic update — instant UI feedback
+        // Optimistic update — instant UI feedback (also toggle all items)
         setSessions(prev => prev.map(s =>
-            s.id === session.id ? { ...s, status: newStatus } : s
+            s.id === session.id ? {
+                ...s,
+                status: newStatus,
+                items: s.items?.map(item => ({
+                    ...item,
+                    completed: newStatus === 'completed' ? 1 : 0,
+                    completedCount: newStatus === 'completed' ? item.targetCount : 0,
+                })),
+            } : s
         ));
         try {
             await updateSessionStatus(session.id, newStatus);
         } catch {
             // Rollback on failure
             setSessions(prev => prev.map(s =>
-                s.id === session.id ? { ...s, status: session.status } : s
+                s.id === session.id ? { ...s, status: session.status, items: session.items } : s
             ));
             toast.error('Failed to update');
         }
