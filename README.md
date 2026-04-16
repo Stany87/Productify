@@ -1,72 +1,108 @@
-# Productify: Multi-User Accountability & Productivity Platform
+<div align="center">
 
-Productify is a comprehensive, AI-assisted productivity and habit-tracking web application designed to gamify accountability. It combines daily scheduling, real-time analytics, habit tracking, and dynamic "punishment backlogs" to ensure you stay on top of your daily goals. 
+<img src="docs/screenshots/login.png" alt="Productify Login" width="700"/>
 
-With built-in LeetCode API integration and AI-powered schedule pivoting, it acts as an intelligent assistant to dynamically adapt your workflow throughout the day.
+# Productify
 
-## 🚀 Features
+**AI-powered daily scheduler, habit tracker, and accountability engine**
 
-- **Multi-User Real-Time Dashboard**: Track your daily schedule flow across multiple users securely.
-- **AI Schedule Pivoting**: Life happens. Ask the Groq AI engine to "pivot my schedule" and it will automatically clear out the afternoon and re-generate a new optimized timeline for the rest of the day based on your current constraints.
-- **Punishment Backlog**: Missed tasks aren't forgotten. They are dynamically transferred to a dynamic "Backlog" queue. You must complete your backlog tasks before you regain access to scheduling leisure activities. 
-- **LeetCode GraphQL Integration**: An active integration with the public LeetCode API allows you to monitor your daily accepted submissions and visualizes your coding consistency directly inside your analytics dashboard.
-- **Comprehensive Analytics**: View completion rate trends, habit consistency (Water / Workouts), and pie chart breakdowns of completed vs. remaining tasks.
-- **Deep Focus Mode**: A dedicated flow-state timer page designed for uninterrupted work.
-- **Native Browser Notifications**: Get alerts 30 minutes and 10 minutes before an upcoming scheduled session begins.
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-productify--pi.vercel.app-16a34a?style=for-the-badge&logo=vercel)](https://productify-pi.vercel.app)
+[![Stack](https://img.shields.io/badge/Stack-React%20%7C%20Node%20%7C%20MongoDB-0f172a?style=for-the-badge)](#tech-stack)
 
-## 🛠 Tech Stack
+</div>
 
-- **Frontend**: React 19, Vite, Tailwind CSS v4, Framer Motion, Recharts.
-- **Backend / API**: Node.js, Express wrapped in **Netlify Functions** (`serverless-http`), **PostgreSQL** (`pg` pool).
-- **Database**: Cloud-hosted **Supabase** (PostgreSQL) replace local SQLite for serverless scalability.
-- **Authentication**: JWT token-based authentication (`jsonwebtoken`, `bcryptjs`).
-- **AI Engine**: `groq-sdk` handling unstructured NLP generation.
+---
 
-## 💻 Running & Deploying Locally
+## Screenshots
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/dashboard.png" alt="Dashboard"/><br/><sub><b>Dashboard</b> — weekly activity, upcoming sessions, LeetCode progress</sub></td>
+    <td><img src="docs/screenshots/sessions.png" alt="Sessions"/><br/><sub><b>Sessions</b> — AI-generated daily agenda with checkboxes and AI Pivot</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/analytics.png" alt="Analytics"/><br/><sub><b>Analytics</b> — 14-day completion trends and habit stats</sub></td>
+    <td><img src="docs/screenshots/schedule_setup.png" alt="Schedule Setup"/><br/><sub><b>Schedule Setup</b> — describe your routine, AI builds the schedule</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/backlog.png" alt="Backlog"/><br/><sub><b>Backlog</b> — missed tasks carry forward as accountability debt</sub></td>
+    <td></td>
+  </tr>
+</table>
+
+---
+
+## Features
+
+- **AI Schedule Generation** — Describe your day in plain English; Groq AI builds a full session plan
+- **AI Pivot** — Life changed? Tell Productify (e.g. "college cancelled, free afternoon") and it rebuilds the rest of your day on the fly
+- **Optimistic UI** — Checkboxes respond instantly; API syncs in the background
+- **Punishment Backlog** — Incomplete tasks roll forward into a "debt queue" you must clear
+- **LeetCode Integration** — Pulls your daily submission count via LeetCode GraphQL; shows verified badges per question
+- **Analytics** — Completion rate trend, habit tracking (water / workout), weekly bar chart
+- **Deep Focus Mode** — Built-in Pomodoro-style focus timer
+- **Browser Notifications** — Alerts 30 min and 10 min before sessions start
+- **JWT Auth** — Secure per-user data isolation
+
+---
+
+## Tech Stack
+
+| Layer | Tech |
+|---|---|
+| Frontend | React 19, Vite, Tailwind CSS v4, Framer Motion, Recharts |
+| Backend | Node.js, Express (serverless via Vercel Functions) |
+| Database | MongoDB Atlas (Mongoose) |
+| AI | Groq SDK (`llama-3.3-70b-versatile`) |
+| Auth | JWT + bcryptjs |
+| Deployment | Vercel |
+
+---
+
+## Local Development
 
 ### Prerequisites
-- Node.js (v18+)
-- A [Groq API Key](https://console.groq.com/keys)
-- A [Supabase](https://supabase.com/) PostgreSQL database
+- Node.js 18+
+- [MongoDB Atlas](https://cloud.mongodb.com/) free cluster (or local MongoDB)
+- [Groq API Key](https://console.groq.com/keys)
 
-### Local Development Setup
+### Setup
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/Stany87/Productify.git
-   cd Productify
-   ```
+```bash
+# 1. Clone
+git clone https://github.com/Stany87/Productify.git
+cd Productify
 
-2. **Install dependencies:**
-   ```bash
-   npm install
-   ```
+# 2. Install
+npm install
 
-3. **Configure Environment Variables:**
-   Create a `.env` file in the root directory:
-   ```env
-   GROQ_API_KEY=your_groq_api_key_here
-   DATABASE_URL=postgresql://postgres:[YOUR-PASSWORD]@db.[YOUR-URL].supabase.co:5432/postgres
-   JWT_SECRET=your_jwt_secret_key_here
-   ```
+# 3. Create server/.env
+MONGODB_URI=mongodb+srv://<user>:<pass>@cluster.mongodb.net/productify
+GROQ_API_KEY=gsk_...
+JWT_SECRET=your_secret_here
+PORT=3001
 
-4. **Initialize Database Schema:**
-   *(Ensure you have executed the commands in `server/schema.sql` against your Supabase database either via the Supabase SQL Editor or a local migration script.)*
+# 4. Run backend (terminal 1)
+node server/index.js
 
-5. **Start the Netlify Dev Server:**
-   This project uses Netlify Dev to automatically spin up both the Vite frontend and proxy the Node.js serverless backend.
-   ```bash
-   npx netlify dev
-   ```
+# 5. Run frontend (terminal 2)
+npm run dev
+```
 
-6. **Open in Browser:**
-   Navigate to `http://localhost:8888` to access the full-stack application natively.
+Open **http://localhost:5173** — API proxies automatically to port 3001.
 
-### 🌐 Deploying to Netlify (Production)
+---
 
-This project contains a `netlify.toml` file pre-configured for deployment. 
-1. Push your code to GitHub.
-2. Sign in to [Netlify](https://www.netlify.com/) and click **"Add new site" -> "Import an existing project"**.
-3. Select your GitHub repository.
-4. Add your `GROQ_API_KEY`, `DATABASE_URL`, and `JWT_SECRET` in the Netlify **Environment Variables** settings.
-5. Click **Deploy Site**. Your backend API will automatically be hosted as Netlify Serverless Functions!
+## Deploy to Vercel
+
+```bash
+npm i -g vercel
+vercel login
+vercel --prod \
+  -e MONGODB_URI="your_uri" \
+  -e GROQ_API_KEY="your_key"
+```
+
+Or import the repo at **https://vercel.com/new** and set the environment variables in the dashboard.
+
+> **MongoDB Atlas**: Make sure to whitelist `0.0.0.0/0` in Network Access → IP Allowlist so Vercel's dynamic IPs can connect.
